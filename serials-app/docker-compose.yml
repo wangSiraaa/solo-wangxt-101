@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: serials
+      POSTGRES_USER: serials
+      POSTGRES_PASSWORD: serials
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serials -d serials"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      DB_ENGINE: postgres
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: serials
+      PGUSER: serials
+      PGPASSWORD: serials
+      DJANGO_DEBUG: "0"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
