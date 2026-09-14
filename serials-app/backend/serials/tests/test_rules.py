@@ -1,10 +1,12 @@
-"""枚举规则：跨年卷、停刊、频率步长、合期覆盖。"""
+"""枚举规则：跨年卷、停刊、频率步长、合期覆盖、编号校验。"""
 import pytest
+from django.core.exceptions import ValidationError
 
-from serials.models import Frequency, Issue, IssueKind, TitleStatus
+from serials import services
+from serials.models import Frequency, IssueKind, TitleStatus
 from serials.rules import expected_slots, issue_covers
 
-from .conftest import make_title
+from .conftest import make_issue, make_title
 
 pytestmark = pytest.mark.django_db
 
@@ -57,44 +59,29 @@ def test_frequency_step():
 
 
 def test_combined_issue_covers_two_numbers(monthly_title):
-    issue = Issue.objects.create(
-        title=monthly_title, kind=IssueKind.COMBINED,
-        pub_year=2024, pub_month=7, volume=1, number=7, number_end=8,
-    )
+    issue = make_issue(monthly_title, number=7, number_end=8, kind=IssueKind.COMBINED)
     assert issue_covers(issue) == [(1, 7), (1, 8)]
 
 
 def test_supplement_covers_nothing(monthly_title):
-    issue = Issue.objects.create(
-        title=monthly_title, kind=IssueKind.SUPPLEMENT,
-        pub_year=2024, pub_month=5, supplement_no=1,
-    )
+    issue = make_issue(monthly_title, number=None, volume=None,
+                       kind=IssueKind.SUPPLEMENT, supplement_no=1, pub_month=5)
     assert issue_covers(issue) == []
 
 
-def test_issue_validation_rules(monthly_title):
-    from django.core.exceptions import ValidationError
-
-    with pytest.raises(ValidationError):  # 合期止号必须大于起号
-        Issue(
-            title=monthly_title, kind=IssueKind.COMBINED,
-            pub_year=2024, pub_month=7, volume=1, number=8, number_end=7,
-        ).full_clean()
+def test_numbering_validation_rules(monthly_title):
+    with pytest.raises(services.DomainError):  # 合期止号必须大于起号
+        make_issue(monthly_title, number=8, number_end=7, kind=IssueKind.COMBINED)
     with pytest.raises(ValidationError):  # 增刊必须有增刊序号
-        Issue(
-            title=monthly_title, kind=IssueKind.SUPPLEMENT,
-            pub_year=2024, pub_month=7, supplement_no=0,
-        ).full_clean()
+        make_issue(monthly_title, number=None, volume=None,
+                   kind=IssueKind.SUPPLEMENT, supplement_no=0)
+    with pytest.raises(services.DomainError):  # 正期必须有卷期编号
+        make_issue(monthly_title, number=None, volume=None)
 
 
 def test_no_issue_after_ceased(monthly_title):
-    from django.core.exceptions import ValidationError
-
     monthly_title.status = TitleStatus.CEASED
     monthly_title.ceased_year, monthly_title.ceased_month = 2024, 6
     monthly_title.save()
     with pytest.raises(ValidationError):
-        Issue(
-            title=monthly_title, kind=IssueKind.REGULAR,
-            pub_year=2024, pub_month=7, volume=1, number=7,
-        ).full_clean()
+        make_issue(monthly_title, number=7, pub_month=7)

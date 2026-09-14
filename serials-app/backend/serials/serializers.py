@@ -6,9 +6,9 @@ from .models import (
     BoundVolume,
     BoundVolumeItem,
     Issue,
-    IssueKind,
     Item,
     Location,
+    NumberAssignment,
     OperationLog,
     Title,
 )
@@ -72,40 +72,61 @@ class ItemSerializer(serializers.ModelSerializer):
         return LocationSerializer(loc).data if loc else None
 
 
+class NumberAssignmentSerializer(serializers.ModelSerializer):
+    number_label = serializers.CharField(read_only=True)
+    is_current = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NumberAssignment
+        fields = [
+            "id", "issue", "volume", "number", "number_end",
+            "number_label", "valid_from", "valid_to", "is_current", "reason",
+        ]
+
+    def get_is_current(self, obj):
+        return obj.valid_to is None
+
+
 class IssueSerializer(serializers.ModelSerializer):
+    """出版单元：稳定身份 + 当前显示编号 + 编号版本历史。"""
+
     label = serializers.CharField(read_only=True)
     kind_display = serializers.CharField(source="get_kind_display", read_only=True)
     covers = serializers.SerializerMethodField()
     items = ItemSerializer(many=True, read_only=True)
     title_name = serializers.CharField(source="title.name", read_only=True)
+    # 当前显示编号（来自 NumberAssignment 当前版本）
+    volume = serializers.SerializerMethodField()
+    number = serializers.SerializerMethodField()
+    number_end = serializers.SerializerMethodField()
+    numberings = NumberAssignmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Issue
         fields = [
             "id", "title", "title_name", "kind", "kind_display", "label",
-            "pub_year", "pub_month", "volume", "number", "number_end",
+            "pub_year", "pub_month",
+            "volume", "number", "number_end", "numberings",
             "supplement_no", "covers", "note", "items", "registered_at",
         ]
 
+    def _current(self, obj):
+        return obj.current_numbering
+
+    def get_volume(self, obj):
+        cur = self._current(obj)
+        return cur.volume if cur else None
+
+    def get_number(self, obj):
+        cur = self._current(obj)
+        return cur.number if cur else None
+
+    def get_number_end(self, obj):
+        cur = self._current(obj)
+        return cur.number_end if cur else None
+
     def get_covers(self, obj):
         return [{"volume": v, "number": n} for v, n in issue_covers(obj)]
-
-    def validate(self, attrs):
-        data = dict(attrs)
-        if self.instance:
-            for f in ("title", "kind", "pub_year", "pub_month", "volume",
-                      "number", "number_end", "supplement_no", "note"):
-                data.setdefault(f, getattr(self.instance, f))
-        instance = Issue(**data)
-        if self.instance:
-            instance.pk = self.instance.pk
-        try:
-            instance.full_clean()
-        except DjangoValidationError as exc:
-            raise DRFValidationError(
-                exc.message_dict if hasattr(exc, "message_dict") else exc.messages
-            )
-        return attrs
 
 
 class BoundVolumeItemSerializer(serializers.ModelSerializer):
@@ -122,14 +143,41 @@ class BoundVolumeSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     bound_items = BoundVolumeItemSerializer(many=True, read_only=True)
     title_name = serializers.CharField(source="title.name", read_only=True)
+    index_candidates = serializers.SerializerMethodField()
 
     class Meta:
         model = BoundVolume
         fields = [
             "id", "title", "title_name", "barcode", "label",
             "location", "status", "status_display",
-            "bound_items", "created_at", "unbound_at",
+            "bound_items", "index_candidates", "created_at", "unbound_at",
         ]
+
+    def get_index_candidates(self, obj):
+        """索引候选：按原装订顺序（position）列出各册当前编号与历史别名。
+
+        册内改号后候选自动更新，装订顺序不变。
+        """
+        candidates = []
+        records = obj.bound_items.all()  # Meta.ordering: position
+        if obj.status == "UNBOUND":
+            records = [r for r in records]
+        for record in records:
+            issue = record.item.issue
+            cur = issue.current_numbering
+            aliases = [
+                n.number_label for n in issue.numberings.all() if n.valid_to is not None
+            ]
+            candidates.append(
+                {
+                    "position": record.position,
+                    "barcode": record.item.barcode,
+                    "issue_id": issue.id,
+                    "current_number": cur.number_label if cur else None,
+                    "aliases": aliases,
+                }
+            )
+        return candidates
 
 
 class OperationLogSerializer(serializers.ModelSerializer):

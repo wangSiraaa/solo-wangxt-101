@@ -3,50 +3,54 @@ import pytest
 from rest_framework.test import APIClient
 
 from serials import rules, services
-from serials.models import Frequency, Issue, IssueKind, TitleStatus
+from serials.models import Frequency, IssueKind, TitleStatus
 
-from .conftest import make_title
+from .conftest import make_issue, make_title
 
 pytestmark = pytest.mark.django_db
 
 
-def reg(title, **kw):
-    return Issue.objects.create(title=title, **kw)
-
-
 def test_combined_issue_covers_both_slots(monthly_title, locations):
     """两期合刊：第7、8期两个 slot 都由同一物理合刊满足，8期不算缺号。"""
-    combined = reg(
-        monthly_title, kind=IssueKind.COMBINED,
-        pub_year=2024, pub_month=7, volume=1, number=7, number_end=8,
-    )
+    combined = make_issue(monthly_title, number=7, number_end=8, kind=IssueKind.COMBINED)
     services.check_in(issue_id=combined.id, barcode="C-78",
                       location_id=locations["xk"].id)
     analysis = rules.analyze_title(monthly_title, upto=(2024, 8))
     by_number = {r.slot.number: r for r in analysis.rows}
     assert by_number[7].state == rules.HELD
     assert by_number[8].state == rules.HELD
-    assert by_number[7].issue.id == by_number[8].issue.id == combined.id
+    assert by_number[7].units[0].id == by_number[8].units[0].id == combined.id
     # 其余未登记的 slot 是缺号而不是缺藏
     assert by_number[1].state == rules.NOT_PUBLISHED
 
 
+def test_combined_coverage_is_not_two_entities(monthly_title, locations):
+    """一个合刊覆盖两个单元 ≠ 两本可借实体：内容覆盖 2，实体数量 1。"""
+    combined = make_issue(monthly_title, number=7, number_end=8, kind=IssueKind.COMBINED)
+    services.check_in(issue_id=combined.id, barcode="C-78",
+                      location_id=locations["xk"].id)
+    analysis = rules.analyze_title(monthly_title, upto=(2024, 8))
+    # 内容覆盖：7、8 两个 slot 都在藏
+    assert analysis.stats["coverage"]["held"] == 2
+    # 实体数量：只有 1 本可借
+    assert analysis.stats["entities"]["total_lendable"] == 1
+    assert analysis.stats["entities"]["on_shelf"] == 1
+
+
 def test_missing_vs_not_published(monthly_title, locations):
     """已出版无实体=缺藏；无出版登记=缺号。两者必须区分。"""
-    published = reg(monthly_title, kind=IssueKind.REGULAR,
-                    pub_year=2024, pub_month=1, volume=1, number=1)
+    published = make_issue(monthly_title, number=1)
     assert published.items.count() == 0
     analysis = rules.analyze_title(monthly_title, upto=(2024, 2))
     by_number = {r.slot.number: r for r in analysis.rows}
     assert by_number[1].state == rules.MISSING          # 缺藏
     assert by_number[2].state == rules.NOT_PUBLISHED    # 缺号
-    assert analysis.stats["missing"] == 1
-    assert analysis.stats["not_published"] == 1
+    assert analysis.stats["coverage"]["missing"] == 1
+    assert analysis.stats["coverage"]["not_published"] == 1
 
 
 def test_held_after_checkin(monthly_title, locations):
-    issue = reg(monthly_title, kind=IssueKind.REGULAR,
-                pub_year=2024, pub_month=1, volume=1, number=1)
+    issue = make_issue(monthly_title, number=1)
     services.check_in(issue_id=issue.id, barcode="B-1", location_id=locations["xk"].id)
     analysis = rules.analyze_title(monthly_title, upto=(2024, 1))
     assert analysis.rows[0].state == rules.HELD
@@ -64,19 +68,17 @@ def test_ceased_months_produce_no_gaps(locations):
 
 
 def test_supplement_not_in_slots(monthly_title, locations):
-    reg(monthly_title, kind=IssueKind.SUPPLEMENT,
-        pub_year=2024, pub_month=5, supplement_no=1)
+    make_issue(monthly_title, number=None, volume=None,
+               kind=IssueKind.SUPPLEMENT, supplement_no=1, pub_month=5)
     analysis = rules.analyze_title(monthly_title, upto=(2024, 6))
     assert len(analysis.supplements) == 1
-    assert all(r.issue is None or r.issue.kind != IssueKind.SUPPLEMENT for r in analysis.rows)
+    assert all(not u or u.kind != IssueKind.SUPPLEMENT for r in analysis.rows for u in r.units)
 
 
 def test_gaps_endpoint_itemized(monthly_title, locations):
     """缺藏清单逐项给出核实提示；合期覆盖的期号不出现在清单里。"""
-    reg(monthly_title, kind=IssueKind.REGULAR,
-        pub_year=2024, pub_month=1, volume=1, number=1)          # 缺藏
-    combined = reg(monthly_title, kind=IssueKind.COMBINED,
-                   pub_year=2024, pub_month=7, volume=1, number=7, number_end=8)
+    make_issue(monthly_title, number=1)                                   # 缺藏
+    combined = make_issue(monthly_title, number=7, number_end=8, kind=IssueKind.COMBINED)
     services.check_in(issue_id=combined.id, barcode="C-78",
                       location_id=locations["xk"].id)
     client = APIClient()
@@ -92,16 +94,17 @@ def test_gaps_endpoint_itemized(monthly_title, locations):
 
 
 def test_timeline_endpoint_shape(monthly_title, locations):
-    issue = reg(monthly_title, kind=IssueKind.REGULAR,
-                pub_year=2024, pub_month=1, volume=1, number=1)
+    issue = make_issue(monthly_title, number=1)
     services.check_in(issue_id=issue.id, barcode="B-1", location_id=locations["xk"].id)
     client = APIClient()
     data = client.get(f"/api/titles/{monthly_title.id}/timeline/").json()
-    assert data["stats"]["expected"] >= 1
-    slot1 = next(s for s in data["slots"] if s["number"] == 1)
+    assert data["stats"]["coverage"]["expected"] >= 1
+    assert "entities" in data["stats"]
+    slot1 = next(s for s in data["slots"] if s["number"] == 1 and s["year"] == 2024)
     assert slot1["state"] == "HELD"
     assert slot1["items"][0]["barcode"] == "B-1"
     assert slot1["items"][0]["effective_location"]["code"] == "XK-1F"
+    assert slot1["explanation"]  # 每个 slot 都有可核实的解释
 
 
 def test_lineage_endpoint(db):

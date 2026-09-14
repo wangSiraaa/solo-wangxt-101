@@ -41,6 +41,15 @@ function detail(l) {
     return `逐册恢复：${p.restored.map((r) => `${r.barcode}→${r.restored_location}`).join(', ')}`
   if (l.type === 'CHECK_IN') return `复本号 ${p.copy_no}`
   if (l.type === 'ISSUE_REGISTER') return p.label || ''
+  if (l.type === 'RENUMBER' && p.old && p.new)
+    return `第${p.old.volume}卷第${p.old.number}期 → 第${p.new.volume}卷第${p.new.number}期（${p.reason || ''}）${
+      p.collisions && p.collisions.length ? ' ⚠️重名' : ''
+    }`
+  if (l.type === 'TITLE_RESUME' && p.previous_ceased)
+    return `停刊（至${p.previous_ceased.year}年${p.previous_ceased.month}月）更正为延迟出版`
+  if (l.type === 'SPLIT_VOLUME' && p.moved)
+    return `拆出 ${p.moved.length} 册 → ${p.new_barcode}：${p.moved.join(', ')}`
+  if (l.type === 'WITHDRAW_ITEM') return `${p.barcode || ''} ${p.reason || ''}`
   return ''
 }
 </script>

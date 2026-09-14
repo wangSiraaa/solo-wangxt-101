@@ -1,8 +1,10 @@
-"""REST API：刊名 / 期 / 册 / 合订本 / 位置 / 操作日志。"""
+"""REST API：刊名 / 出版单元 / 册 / 合订本 / 位置 / 编号检索 / 操作日志。"""
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from . import rules, services
 from .models import (
@@ -10,6 +12,7 @@ from .models import (
     Issue,
     Item,
     Location,
+    NumberAssignment,
     OperationLog,
     Title,
 )
@@ -18,6 +21,7 @@ from .serializers import (
     IssueSerializer,
     ItemSerializer,
     LocationSerializer,
+    NumberAssignmentSerializer,
     OperationLogSerializer,
     TitleSerializer,
 )
@@ -25,6 +29,22 @@ from .serializers import (
 
 def _domain_error(exc):
     return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _serialize_slot_row(row):
+    return {
+        "year": row.slot.year,
+        "month": row.slot.month,
+        "volume": row.slot.volume,
+        "number": row.slot.number,
+        "state": row.state,
+        "redundant": row.redundant,
+        "units": IssueSerializer(row.units, many=True).data,
+        "issue": IssueSerializer(row.units[0]).data if row.units else None,  # 兼容旧前端
+        "items": ItemSerializer(row.items, many=True).data,
+        "withdrawn_items": ItemSerializer(row.withdrawn_items, many=True).data,
+        "explanation": row.explanation,
+    }
 
 
 class TitleViewSet(viewsets.ModelViewSet):
@@ -36,66 +56,53 @@ class TitleViewSet(viewsets.ModelViewSet):
             instance = Title(**serializer.validated_data)
             instance.full_clean()
         except DjangoValidationError as exc:
-            from rest_framework.exceptions import ValidationError as DRFValidationError
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
         serializer.save()
 
     @action(detail=True, methods=["get"])
     def timeline(self, request, pk=None):
-        """时间轴：应到 slot × 出版登记 × 馆藏实体，逐月可核对。"""
+        """时间轴：应到 slot × 出版单元 × 实体；内容覆盖与实体数量分列。"""
         title = self.get_object()
         analysis = rules.analyze_title(title)
         slots = []
         for row in analysis.rows:
-            s = row.slot
-            slots.append(
-                {
-                    "year": s.year,
-                    "month": s.month,
-                    "volume": s.volume,
-                    "number": s.number,
-                    "state": row.state,
-                    "issue": IssueSerializer(row.issue).data if row.issue else None,
-                    "items": ItemSerializer(row.items, many=True).data,
-                    "verification": (
-                        rules.verification_hint(title, row) if row.state != rules.HELD else None
-                    ),
-                }
+            data = _serialize_slot_row(row)
+            data["verification"] = (
+                rules.verification_hint(title, row) if row.state != rules.HELD else None
             )
-        supplements = IssueSerializer(analysis.supplements, many=True).data
+            slots.append(data)
         return Response(
             {
                 "title": TitleSerializer(title).data,
                 "slots": slots,
-                "supplements": supplements,
-                "conflicts": analysis.conflicts,
+                "supplements": IssueSerializer(analysis.supplements, many=True).data,
+                "redundancies": analysis.redundancies,
+                "collisions": analysis.collisions,
+                "title_notes": analysis.title_notes,
                 "stats": analysis.stats,
             }
         )
 
     @action(detail=True, methods=["get"])
     def gaps(self, request, pk=None):
-        """缺藏/缺号清单：逐项可核实（缺号 != 缺藏）。"""
+        """缺藏/缺号清单：逐项解释、可核实（缺号 != 缺藏）。"""
         title = self.get_object()
         analysis = rules.analyze_title(title)
         rows = []
         for row in analysis.rows:
             if row.state == rules.HELD:
                 continue
-            s = row.slot
-            rows.append(
-                {
-                    "year": s.year,
-                    "month": s.month,
-                    "volume": s.volume,
-                    "number": s.number,
-                    "state": row.state,
-                    "state_display": "缺藏" if row.state == rules.MISSING else "缺号（未登记出版）",
-                    "issue": IssueSerializer(row.issue).data if row.issue else None,
-                    "verification": rules.verification_hint(title, row),
-                }
-            )
-        return Response({"title": TitleSerializer(title).data, "gaps": rows})
+            data = _serialize_slot_row(row)
+            data["state_display"] = "缺藏" if row.state == rules.MISSING else "缺号（未登记出版）"
+            data["verification"] = rules.verification_hint(title, row)
+            rows.append(data)
+        return Response(
+            {
+                "title": TitleSerializer(title).data,
+                "title_notes": analysis.title_notes,
+                "gaps": rows,
+            }
+        )
 
     @action(detail=True, methods=["get"])
     def lineage(self, request, pk=None):
@@ -103,7 +110,7 @@ class TitleViewSet(viewsets.ModelViewSet):
         title = self.get_object()
         chain, seen = [], set()
         node = title
-        while node and node.pk not in seen:  # 前身方向
+        while node and node.pk not in seen:
             seen.add(node.pk)
             chain.append(node)
             node = node.predecessor
@@ -117,13 +124,26 @@ class TitleViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"])
+    def resume(self, request, pk=None):
+        """停刊更正：实为延迟出版 {note?}"""
+        try:
+            title = services.resume_title(
+                title_id=pk,
+                note=request.data.get("note", ""),
+                actor=request.data.get("actor", "system"),
+            )
+        except services.DomainError as exc:
+            return _domain_error(exc)
+        return Response(TitleSerializer(title).data)
+
 
 class IssueViewSet(viewsets.ModelViewSet):
     serializer_class = IssueSerializer
 
     def get_queryset(self):
         qs = Issue.objects.select_related("title").prefetch_related(
-            "items__location", "items__bound_volume__location"
+            "numberings", "items__location", "items__bound_volume__location"
         )
         params = self.request.query_params
         if params.get("title"):
@@ -133,12 +153,100 @@ class IssueViewSet(viewsets.ModelViewSet):
         return qs
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        issue = services.register_issue(
-            actor=request.data.get("actor", "system"), **serializer.validated_data
-        )
+        try:
+            issue = services.register_issue(
+                actor=request.data.get("actor", "system"),
+                title_id=request.data.get("title"),
+                kind=request.data.get("kind", "REGULAR"),
+                pub_year=request.data.get("pub_year"),
+                pub_month=request.data.get("pub_month"),
+                volume=request.data.get("volume"),
+                number=request.data.get("number"),
+                number_end=request.data.get("number_end"),
+                supplement_no=request.data.get("supplement_no", 0),
+                note=request.data.get("note", ""),
+            )
+        except services.DomainError as exc:
+            return _domain_error(exc)
+        except DjangoValidationError as exc:
+            return _domain_error(exc)
         return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def renumber(self, request, pk=None):
+        """改号 {volume, number, number_end?, reason?}：新增映射版本，实体不变。"""
+        try:
+            issue, collisions = services.renumber_issue(
+                issue_id=pk,
+                volume=request.data.get("volume"),
+                number=request.data.get("number"),
+                number_end=request.data.get("number_end"),
+                reason=request.data.get("reason", ""),
+                actor=request.data.get("actor", "system"),
+            )
+        except services.DomainError as exc:
+            return _domain_error(exc)
+        except DjangoValidationError as exc:
+            return _domain_error(exc)
+        data = IssueSerializer(issue).data
+        data["collisions"] = collisions
+        if collisions:
+            data["warning"] = "改号后与其他单元形成重名，检索时需按单元身份区分"
+        return Response(data)
+
+    @action(detail=True, methods=["get"])
+    def numberings(self, request, pk=None):
+        """该单元的编号映射版本历史。"""
+        issue = self.get_object()
+        return Response(NumberAssignmentSerializer(issue.numberings.all(), many=True).data)
+
+
+class NumberingLookupView(APIView):
+    """编号检索：按 (卷, 期号[, 时间点]) 查映射版本。
+
+    旧编号仍可检索；重名时返回全部匹配单元，各自指向自己的实体——
+    历史目录链接不会指向错误实体。
+    """
+
+    def get(self, request):
+        title_id = request.query_params.get("title")
+        volume = request.query_params.get("volume")
+        number = request.query_params.get("number")
+        at = request.query_params.get("at")  # ISO 日期时间，可选
+        if not (title_id and volume and number):
+            return Response(
+                {"detail": "需要 title、volume、number 参数"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = (
+            NumberAssignment.objects.filter(issue__title_id=title_id, volume=volume)
+            .select_related("issue__title")
+            .prefetch_related("issue__items__location", "issue__numberings")
+            .order_by("valid_from", "id")
+        )
+        matches = []
+        for assignment in qs:
+            if not (assignment.number <= int(number) <= (assignment.number_end or assignment.number)):
+                continue
+            if at:
+                from django.utils.dateparse import parse_datetime
+
+                moment = parse_datetime(at)
+                if moment is None:
+                    return Response({"detail": "at 参数格式不正确"}, status=status.HTTP_400_BAD_REQUEST)
+                if not (assignment.valid_from <= moment and (assignment.valid_to is None or assignment.valid_to > moment)):
+                    continue
+            issue = assignment.issue
+            matches.append(
+                {
+                    "assignment": NumberAssignmentSerializer(assignment).data,
+                    "issue": IssueSerializer(issue).data,
+                    "items": ItemSerializer(issue.items.all(), many=True).data,
+                }
+            )
+        return Response({"query": {"title": int(title_id), "volume": int(volume),
+                                   "number": int(number), "at": at},
+                         "matches": matches})
 
 
 class ItemViewSet(viewsets.ReadOnlyModelViewSet):
@@ -147,7 +255,7 @@ class ItemViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = Item.objects.select_related(
             "issue__title", "location", "bound_volume__location"
-        )
+        ).prefetch_related("issue__numberings")
         params = self.request.query_params
         if params.get("issue"):
             qs = qs.filter(issue_id=params["issue"])
@@ -186,6 +294,19 @@ class ItemViewSet(viewsets.ReadOnlyModelViewSet):
             return _domain_error(exc)
         return Response(ItemSerializer(item).data)
 
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        """注销一册：{reason?, actor?}（馆员决定，不自动执行）"""
+        try:
+            item = services.withdraw_item(
+                item_id=pk,
+                reason=request.data.get("reason", ""),
+                actor=request.data.get("actor", "system"),
+            )
+        except services.DomainError as exc:
+            return _domain_error(exc)
+        return Response(ItemSerializer(item).data)
+
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None):
         logs = OperationLog.objects.filter(item_id=pk).select_related(
@@ -199,7 +320,9 @@ class BoundVolumeViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         qs = BoundVolume.objects.select_related("title", "location").prefetch_related(
-            "bound_items__item__issue", "bound_items__pre_location"
+            "bound_items__item__issue__numberings",
+            "bound_items__item__issue__title",
+            "bound_items__pre_location",
         )
         params = self.request.query_params
         if params.get("title"):
@@ -235,6 +358,22 @@ class BoundVolumeViewSet(viewsets.ReadOnlyModelViewSet):
         except services.DomainError as exc:
             return _domain_error(exc)
         return Response(BoundVolumeSerializer(bv).data)
+
+    @action(detail=True, methods=["post"])
+    def split(self, request, pk=None):
+        """合订册拆分：{item_ids, new_barcode, new_label?, location_id?}"""
+        try:
+            bv = services.split_bound_volume(
+                bound_volume_id=pk,
+                item_ids=request.data.get("item_ids"),
+                new_barcode=request.data.get("new_barcode"),
+                new_label=request.data.get("new_label", ""),
+                location_id=request.data.get("location_id"),
+                actor=request.data.get("actor", "system"),
+            )
+        except services.DomainError as exc:
+            return _domain_error(exc)
+        return Response(BoundVolumeSerializer(bv).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def move(self, request, pk=None):

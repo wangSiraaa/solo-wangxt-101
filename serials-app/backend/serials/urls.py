@@ -6,6 +6,7 @@ from .views import (
     IssueViewSet,
     ItemViewSet,
     LocationViewSet,
+    NumberingLookupView,
     OperationLogViewSet,
     TitleViewSet,
 )
@@ -18,4 +19,8 @@ router.register("bound-volumes", BoundVolumeViewSet, basename="boundvolume")
 router.register("locations", LocationViewSet, basename="location")
 router.register("logs", OperationLogViewSet, basename="log")
 
-urlpatterns = [path("", include(router.urls))]
+urlpatterns = [
+    # 编号检索（含历史版本）：/api/lookup/numbering/?title=&volume=&number=[&at=]
+    path("lookup/numbering/", NumberingLookupView.as_view(), name="numbering-lookup"),
+    path("", include(router.urls)),
+]

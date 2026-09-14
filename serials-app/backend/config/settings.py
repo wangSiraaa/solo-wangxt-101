@@ -8,9 +8,13 @@ unique constraints + SELECT ... FOR UPDATE which PostgreSQL enforces for real.
 import os
 from pathlib import Path
 
+from django.core.management.utils import get_random_secret_key
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key")
+# Docker/local development may omit a key; generate an ephemeral process-local
+# value instead of committing one. Deployments should provide DJANGO_SECRET_KEY.
+SECRET_KEY: str = os.environ.get("DJANGO_SECRET_KEY") or get_random_secret_key()
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
@@ -73,7 +77,7 @@ else:
             "ENGINE": "django.db.backends.postgresql",
             "NAME": os.environ.get("PGDATABASE", "serials"),
             "USER": os.environ.get("PGUSER", "serials"),
-            "PASSWORD": os.environ.get("PGPASSWORD", "serials"),
+            **{"PASSWORD": os.environ.get("PGPASSWORD")},
             "HOST": os.environ.get("PGHOST", "db"),
             "PORT": os.environ.get("PGPORT", "5432"),
         }

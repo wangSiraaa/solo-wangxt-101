@@ -5,15 +5,11 @@ import pytest
 from rest_framework.test import APIClient
 
 from serials import services
-from serials.models import Issue, Item, IssueKind, OperationLog, OperationType
+from serials.models import Item, OperationLog, OperationType
+
+from .conftest import make_issue
 
 pytestmark = pytest.mark.django_db
-
-
-def make_issue(title, **kw):
-    defaults = dict(kind=IssueKind.REGULAR, pub_year=2024, pub_month=1, volume=1, number=1)
-    defaults.update(kw)
-    return Issue.objects.create(title=title, **defaults)
 
 
 def test_checkin_assigns_incrementing_copy_numbers(monthly_title, locations):
@@ -21,7 +17,7 @@ def test_checkin_assigns_incrementing_copy_numbers(monthly_title, locations):
     a = services.check_in(issue_id=issue.id, barcode="B-1", location_id=locations["xk"].id)
     b = services.check_in(issue_id=issue.id, barcode="B-2", location_id=locations["xk"].id)
     assert (a.copy_no, b.copy_no) == (1, 2)
-    assert a.pk != b.pk  # 同编号（同期）两册是不同实体
+    assert a.pk != b.pk  # 同编号（同单元）两册是不同实体
 
 
 def test_duplicate_barcode_rejected(monthly_title, locations):
@@ -59,7 +55,7 @@ def test_checkin_api_rejects_duplicate_barcode(monthly_title, locations):
 
 @pytest.mark.django_db(transaction=True)
 def test_concurrent_checkin_same_issue_not_merged(monthly_title, locations):
-    """8 个线程并发入藏同一期：应得到 8 条实体，复本号 1..8 各一次。"""
+    """8 个线程并发入藏同一单元：应得到 8 条实体，复本号 1..8 各一次。"""
     issue = make_issue(monthly_title)
     errors = []
 

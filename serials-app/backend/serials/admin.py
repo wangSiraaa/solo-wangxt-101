@@ -6,6 +6,7 @@ from .models import (
     Issue,
     Item,
     Location,
+    NumberAssignment,
     OperationLog,
     Title,
 )
@@ -24,8 +25,14 @@ class TitleAdmin(admin.ModelAdmin):
 
 @admin.register(Issue)
 class IssueAdmin(admin.ModelAdmin):
-    list_display = ("label", "title", "kind", "pub_year", "pub_month", "volume", "number", "number_end")
+    list_display = ("label", "title", "kind", "pub_year", "pub_month")
     list_filter = ("kind", "title")
+
+
+@admin.register(NumberAssignment)
+class NumberAssignmentAdmin(admin.ModelAdmin):
+    list_display = ("issue", "volume", "number", "number_end", "valid_from", "valid_to", "reason")
+    list_filter = ("valid_to",)
 
 
 @admin.register(Item)

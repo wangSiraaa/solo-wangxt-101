@@ -4,23 +4,15 @@ from rest_framework.test import APIClient
 
 from serials import services
 from serials.models import (
-    BoundVolume,
     BoundVolumeStatus,
-    Issue,
-    IssueKind,
-    Item,
     ItemStatus,
     OperationLog,
     OperationType,
 )
 
+from .conftest import make_issue, make_title
+
 pytestmark = pytest.mark.django_db
-
-
-def make_issue(title, n, **kw):
-    defaults = dict(kind=IssueKind.REGULAR, pub_year=2024, pub_month=n, volume=1, number=n)
-    defaults.update(kw)
-    return Issue.objects.create(title=title, **defaults)
 
 
 def checkin(issue, barcode, loc):
@@ -28,7 +20,7 @@ def checkin(issue, barcode, loc):
 
 
 def test_bind_marks_items_and_child_issue_searchable(monthly_title, locations):
-    i1, i2, i3 = (make_issue(monthly_title, n) for n in (1, 2, 3))
+    i1, i2, i3 = (make_issue(monthly_title, number=n) for n in (1, 2, 3))
     a = checkin(i1, "B-1", locations["xk"])
     b = checkin(i2, "B-2", locations["xk"])
     c = checkin(i3, "B-3", locations["xk"])
@@ -51,13 +43,13 @@ def test_bind_marks_items_and_child_issue_searchable(monthly_title, locations):
 
     # 时间轴上同样可见合订本位置
     tl = client.get(f"/api/titles/{monthly_title.id}/timeline/").json()
-    slot2 = next(s for s in tl["slots"] if s["number"] == 2)
+    slot2 = next(s for s in tl["slots"] if s["number"] == 2 and s["year"] == 2024)
     assert slot2["items"][0]["bound_volume"]["barcode"] == "BV-1"
 
 
 def test_unbind_restores_each_items_own_location(monthly_title, locations):
     """拆订必须逐册恢复各自装订前位置——不是只覆盖一个条码。"""
-    i1, i2 = make_issue(monthly_title, 1), make_issue(monthly_title, 2)
+    i1, i2 = make_issue(monthly_title, number=1), make_issue(monthly_title, number=2)
     a = checkin(i1, "B-1", locations["xk"])
     b = checkin(i2, "B-2", locations["mj"])  # 两册装订前位置不同
 
@@ -83,7 +75,7 @@ def test_unbind_restores_each_items_own_location(monthly_title, locations):
 
 
 def test_bind_rejects_already_bound_item(monthly_title, locations):
-    i1, i2 = make_issue(monthly_title, 1), make_issue(monthly_title, 2)
+    i1, i2 = make_issue(monthly_title, number=1), make_issue(monthly_title, number=2)
     a = checkin(i1, "B-1", locations["xk"])
     b = checkin(i2, "B-2", locations["xk"])
     services.bind_items(item_ids=[a.id], barcode="BV-1", label="v1", location_id=locations["gk"].id)
@@ -93,18 +85,16 @@ def test_bind_rejects_already_bound_item(monthly_title, locations):
 
 
 def test_bind_requires_single_title(monthly_title, locations):
-    from .conftest import make_title
-
     other = make_title(name="另一种刊")
-    a = checkin(make_issue(monthly_title, 1), "B-1", locations["xk"])
-    b = checkin(make_issue(other, 1), "B-2", locations["xk"])
+    a = checkin(make_issue(monthly_title, number=1), "B-1", locations["xk"])
+    b = checkin(make_issue(other, number=1), "B-2", locations["xk"])
     with pytest.raises(services.DomainError):
         services.bind_items(item_ids=[a.id, b.id], barcode="BV-1", label="v",
                             location_id=locations["gk"].id)
 
 
 def test_unbind_twice_rejected(monthly_title, locations):
-    a = checkin(make_issue(monthly_title, 1), "B-1", locations["xk"])
+    a = checkin(make_issue(monthly_title, number=1), "B-1", locations["xk"])
     bv = services.bind_items(item_ids=[a.id], barcode="BV-1", label="v",
                              location_id=locations["gk"].id)
     services.unbind(bound_volume_id=bv.id)
@@ -113,7 +103,7 @@ def test_unbind_twice_rejected(monthly_title, locations):
 
 
 def test_move_item_logged_and_bound_item_forbidden(monthly_title, locations):
-    a = checkin(make_issue(monthly_title, 1), "B-1", locations["xk"])
+    a = checkin(make_issue(monthly_title, number=1), "B-1", locations["xk"])
     services.move_item(item_id=a.id, to_location_id=locations["gk"].id)
     a.refresh_from_db()
     assert a.location.code == "GK-2F"
@@ -133,7 +123,7 @@ def test_move_item_logged_and_bound_item_forbidden(monthly_title, locations):
 
 
 def test_move_history_api(monthly_title, locations):
-    a = checkin(make_issue(monthly_title, 1), "B-1", locations["xk"])
+    a = checkin(make_issue(monthly_title, number=1), "B-1", locations["xk"])
     services.move_item(item_id=a.id, to_location_id=locations["gk"].id)
     client = APIClient()
     history = client.get(f"/api/items/{a.id}/history/").json()

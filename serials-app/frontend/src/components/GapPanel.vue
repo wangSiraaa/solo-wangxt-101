@@ -4,10 +4,10 @@
       缺藏 / 缺号清单
       <span class="count">{{ gaps.length }} 项待核实，{{ verified.size }} 项已核实</span>
     </h3>
-    <p class="hint">缺号不等于缺藏：「缺藏」是已出版但无实体；「缺号」是无出版登记，需先与出版方核实。</p>
+    <p class="hint">缺号不等于缺藏：「缺藏」是已出版但无可借实体；「缺号」是无出版登记，需先与出版方核实。改号、停刊更正后的重算结果均附判定解释。</p>
     <table v-if="gaps.length">
       <thead>
-        <tr><th></th><th>发行年月</th><th>卷期</th><th>判定</th><th>逐项核实提示</th></tr>
+        <tr><th></th><th>发行年月</th><th>卷期</th><th>判定</th><th>判定解释</th><th>逐项核实提示</th></tr>
       </thead>
       <tbody>
         <tr v-for="g in gaps" :key="`${g.year}-${g.month}`" :class="{ done: verified.has(key(g)) }">
@@ -15,6 +15,9 @@
           <td>{{ g.year }}-{{ String(g.month).padStart(2, '0') }}</td>
           <td>第{{ g.volume }}卷 第{{ g.number }}期</td>
           <td><span class="state" :class="g.state">{{ g.state_display }}</span></td>
+          <td class="expl">
+            <div v-for="(e, i) in g.explanation || []" :key="i">{{ e }}</div>
+          </td>
           <td class="verif">{{ g.verification }}</td>
         </tr>
       </tbody>
@@ -56,6 +59,7 @@ tr.done td:first-child { text-decoration: none; opacity: 1; }
 .state { padding: 1px 6px; border-radius: 8px; font-size: 11px; white-space: nowrap; }
 .state.MISSING { background: #ffebee; color: #c62828; }
 .state.NOT_PUBLISHED { background: #f5f5f5; color: #616161; }
+.expl { color: #0d47a1; font-size: 11px; }
 .verif { color: #6d4c41; }
 .empty { color: #2e7d32; font-size: 13px; }
 </style>

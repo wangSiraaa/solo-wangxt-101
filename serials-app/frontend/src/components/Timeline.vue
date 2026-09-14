@@ -6,6 +6,8 @@
       <span><i class="sw notpub"></i>缺号（未登记出版）</span>
       <span><i class="tag-demo">合</i>合期</span>
       <span><i class="tag-demo bound">订</i>已装订</span>
+      <span><i class="tag-demo renum">改</i>改号</span>
+      <span><i class="tag-demo redun">重</i>多单元</span>
       <span><i class="tag-demo supp">增</i>增刊</span>
     </div>
 
@@ -22,8 +24,10 @@
         <template v-if="slotAt(y, m)">
           <span class="vol">v{{ slotAt(y, m).volume }}·{{ slotAt(y, m).number }}</span>
           <span class="tags">
-            <span v-if="slotAt(y, m).issue && slotAt(y, m).issue.kind === 'COMBINED'" class="tag">合</span>
+            <span v-if="hasCombined(slotAt(y, m))" class="tag">合</span>
             <span v-if="hasBound(slotAt(y, m))" class="tag bound">订</span>
+            <span v-if="hasRenumbered(slotAt(y, m))" class="tag renum">改</span>
+            <span v-if="slotAt(y, m).redundant" class="tag redun">重</span>
           </span>
         </template>
         <span v-if="suppAt(y, m)" class="tag supp" :title="suppAt(y, m).label">增</span>
@@ -74,8 +78,20 @@ function suppAt(y, m) {
   return suppMap.value[`${y}-${m}`]
 }
 
+function unitsOf(slot) {
+  return slot.units || (slot.issue ? [slot.issue] : [])
+}
+
 function hasBound(slot) {
   return (slot.items || []).some((it) => it.bound_volume)
+}
+
+function hasCombined(slot) {
+  return unitsOf(slot).some((u) => u.kind === 'COMBINED')
+}
+
+function hasRenumbered(slot) {
+  return unitsOf(slot).some((u) => (u.numberings || []).length > 1)
 }
 
 function cellClass(y, m) {
@@ -96,13 +112,15 @@ function onClick(y, m) {
 
 <style scoped>
 .timeline { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; }
-.legend { display: flex; gap: 14px; font-size: 12px; color: #555; margin-bottom: 10px; align-items: center; }
+.legend { display: flex; gap: 12px; font-size: 12px; color: #555; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
 .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -2px; }
 .sw.held { background: #c8e6c9; border: 1px solid #66bb6a; }
 .sw.missing { background: #ffcdd2; border: 1px solid #e57373; }
 .sw.notpub { background: #f5f5f5; border: 1px dashed #9e9e9e; }
 .tag-demo { display: inline-block; font-size: 10px; font-style: normal; padding: 0 4px; border-radius: 3px; background: #bbdefb; color: #0d47a1; margin-right: 4px; }
 .tag-demo.bound { background: #d1c4e9; color: #4527a0; }
+.tag-demo.renum { background: #b2dfdb; color: #004d40; }
+.tag-demo.redun { background: #f8bbd0; color: #880e4f; }
 .tag-demo.supp { background: #ffe0b2; color: #e65100; }
 .year-row { display: flex; align-items: stretch; gap: 4px; margin-bottom: 4px; }
 .year-label { width: 44px; font-weight: 600; color: #444; display: flex; align-items: center; }
@@ -121,6 +139,8 @@ function onClick(y, m) {
 .tags { position: absolute; top: 3px; right: 4px; display: flex; gap: 2px; }
 .tag { font-size: 10px; padding: 0 4px; border-radius: 3px; background: #bbdefb; color: #0d47a1; }
 .tag.bound { background: #d1c4e9; color: #4527a0; }
+.tag.renum { background: #b2dfdb; color: #004d40; }
+.tag.redun { background: #f8bbd0; color: #880e4f; }
 .tag.supp { position: absolute; bottom: 3px; right: 4px; background: #ffe0b2; color: #e65100; }
 .supp-list { margin-top: 10px; font-size: 12px; color: #555; }
 .supp-chip { display: inline-block; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 10px; padding: 1px 8px; margin: 2px 4px 2px 0; }
